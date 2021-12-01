@@ -3,18 +3,6 @@ import torch.nn.functional as F
 import torch.nn as nn
 
 
-class GCN_layer(nn.Module):
-    def __init__(self, in_features, out_features, A):
-        super(GCN_layer, self).__init__()
-        self.in_features = in_features
-        self.out_features = out_features
-        self.A = A
-        self.fc = nn.Linear(in_features, out_features)
-
-    def forward(self, X):
-        return self.fc(torch.spmm(self.A, X))
-
-
 class GATLayer(nn.Module):
     def __init__(self, g, in_dim, out_dim):
         super(GATLayer, self).__init__()
