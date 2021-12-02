@@ -1,9 +1,10 @@
-from itertools import combinations
 import os.path
-import torch
-from torch import nn
+from itertools import combinations
+
 import dgl
 import numpy as np
+import torch
+from torch import nn
 
 all_authors = set()
 
@@ -28,9 +29,12 @@ else:
             clique = combinations(authors, r=2)
             edges.update(clique)
 
-        graph = dgl.to_bidirected(dgl.graph(tuple(zip(*edges))))
+        graph = dgl.graph(tuple(zip(*edges)))
+        graph = dgl.add_self_loop(graph)
+        graph = dgl.to_bidirected(graph)
 
 node_features = 16
-graph.ndata['x'] = nn.Parameter(torch.Tensor(graph.num_nodes(), node_features))
-nn.init.uniform_(graph.ndata['x'], 0, 1)
+graph.ndata['x'] = nn.Parameter(
+    torch.Tensor(graph.num_nodes(), node_features))
+nn.init.uniform_(graph.ndata['x'], -1, 1)
 dgl.save_graphs('dataset/paper_author_relationship.bin', [graph])
