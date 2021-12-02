@@ -33,8 +33,4 @@ else:
         graph = dgl.add_self_loop(graph)
         graph = dgl.to_bidirected(graph)
 
-node_features = 16
-graph.ndata['x'] = nn.Parameter(
-    torch.Tensor(graph.num_nodes(), node_features))
-nn.init.uniform_(graph.ndata['x'], -1, 1)
 dgl.save_graphs('dataset/paper_author_relationship.bin', [graph])

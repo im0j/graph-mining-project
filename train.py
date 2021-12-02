@@ -1,19 +1,21 @@
+import argparse
 import time
+
 import numpy as np
 import pandas as pd
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from dgl.data.utils import load_graphs
-from tqdm.auto import trange
 
-# from gat import GAT
+from dgl.data.utils import load_graphs
 from dgl.nn.pytorch.conv import GATConv as GAT
 
-import argparse
+
 parser = argparse.ArgumentParser()
-parser.add_argument('--thres', type=float, default=0.9)
+parser.add_argument('--thres', type=float, default=0.5)
 parser.add_argument('--epochs', type=int, default=1000)
+parser.add_argument('--lr', type=float, default=1e-3)
 args = parser.parse_args()
 
 
@@ -25,12 +27,13 @@ if device.type == 'cuda':
     print(torch.cuda.get_device_name(0))
     print('CUDA version:', torch.version.cuda)
     print('Memory Usage:')
-    print('Allocated:', round(torch.cuda.memory_allocated(0)/1024**3,1), 'GB')
-    print('Cached:   ', round(torch.cuda.memory_reserved(0)/1024**3,1), 'GB')
+    print('Allocated:', round(torch.cuda.memory_allocated(0)/1024**3, 1), 'GB')
+    print('Cached:   ', round(torch.cuda.memory_reserved(0)/1024**3, 1), 'GB')
 
 
 g = load_graphs("dataset/paper_author_relationship.bin")[0][0].to(device)
-author_mapping = np.load('dataset/author_mapping.npy', allow_pickle=True).item()
+author_mapping = np.load('dataset/author_mapping.npy',
+                         allow_pickle=True).item()
 
 train = pd.read_csv(
     'dataset/train_dataset.csv',
@@ -48,80 +51,101 @@ val = pd.read_csv(
     sep=',\s+',
     engine='python'
 )
-# train['source'] = train['source'].map(author_mapping)
-# train['target'] = train['target'].map(author_mapping)
+
+# create graph node embeddings
+node_features = 32  # TODO: hyperparameter
+num_nodes = g.num_nodes()
+g.ndata['x'] = nn.Parameter(torch.Tensor(
+    num_nodes, node_features)).to(device)
+nn.init.uniform_(g.ndata['x'], -1, 1)
 
 # create the model, 2 heads, each head has hidden size 8
-net = GAT(in_feats=16,
-          out_feats=16,
-          num_heads=2).to(device)
-
+net = GAT(
+    in_feats=node_features,
+    out_feats=node_features,
+    num_heads=16  # TODO: hyperparameter
+).to(device)
 
 # create optimizer
-optimizer = torch.optim.Adam(net.parameters(), lr=1e-3)
-loss_fn = nn.MSELoss()
+optimizer = torch.optim.Adam(net.parameters(), lr=args.lr)
+loss_fn = nn.MSELoss().to(device)
 
 # main loop
 dur = []
-for epoch in trange(args.epochs):
-    if epoch >= 3:
-        t0 = time.time()
+for epoch in range(args.epochs):
+    t0 = time.time()
 
-    net.train()
     h = net(g, g.ndata['x'])
     h = torch.flatten(h, start_dim=1)
 
-    similarities = torch.empty((1000, 1), requires_grad=False)
-    label_list = []
-    cnt_train_error = 0
-    cnt_val_error = 0
+    # Validation
+    net.train(False)
 
+    val_out = torch.empty((1000, 1), requires_grad=False)
+    val_label = torch.tensor(val['label']).to(torch.float).reshape((1000, 1))
     for i in range(1000):
-        #### vaild ######
-        data1 = author_mapping[val['source'][i]]
-        data2 = author_mapping[val['target'][i]]
+        data1 = author_mapping[val.at[i, 'source']]
+        data2 = author_mapping[val.at[i, 'target']]
         v1 = h[data1]
         v2 = h[data2]
         sim = torch.dot(v1, v2) / (torch.norm(v1) * torch.norm(v2))
-        similarities[i] = sim
+        val_out[i] = sim
 
-        if similarities[i] >= args.thres:
-            label_list.append(True)
-        else:
-            label_list.append(False)
+    val_loss = loss_fn(val_out, val_label)
+    val_pred = val_out > args.thres
+    val_acc = torch.mean((val_pred == val_label).to(torch.float)).detach().float()
 
-        if label_list[i] != val['label'][i]:
-            cnt_val_error += 1
+    # Training
+    net.train(True)
 
-        #### train ######
-        data1 = author_mapping[train['source'][i]]
-        data2 = author_mapping[train['target'][i]]
+    pos_count = 64  # TODO: hyperparameter
+    pos_out = torch.empty((pos_count, 1), requires_grad=False)
+    pos_label = torch.ones((pos_count, 1))
+    random_samples = np.random.randint(0, 1000-1, pos_count)
+    for i in range(pos_count):
+        data1 = author_mapping[train.at[random_samples[i], 'source']]
+        data2 = author_mapping[train.at[random_samples[i], 'target']]
         v1 = h[data1]
         v2 = h[data2]
         sim = torch.dot(v1, v2) / (torch.norm(v1) * torch.norm(v2))
-        similarities[i] = sim
+        pos_out[i] = sim
 
-        if similarities[i] >= args.thres:
-            label_list.append(True)
-        else:
-            label_list.append(False)
+    neg_count = 192  # TODO: hyperparameter
+    neg_out = torch.empty((neg_count, 1), requires_grad=False)
+    neg_label = torch.zeros((neg_count, 1))
+    random_samples = np.random.randint(0, num_nodes-1, size=(neg_count, 2))
+    for i in range(neg_count):
+        data1 = random_samples[i, 0]
+        data2 = random_samples[i, 1]
+        v1 = h[data1]
+        v2 = h[data2]
+        sim = torch.dot(v1, v2) / (torch.norm(v1) * torch.norm(v2))
+        neg_out[i] = sim
 
-        if label_list[i] != train['label'][i]:
-            cnt_train_error += 1
+    train_out = torch.cat([pos_out, neg_out])
+    train_label = torch.cat([pos_label, neg_label])
+    train_loss = loss_fn(train_out, train_label)
+    train_pred = train_out > args.thres
+    train_acc = torch.mean((train_pred == train_label).to(torch.float)).detach().float()
 
-    val_error = cnt_val_error / 1000
-    train_error = cnt_train_error / 1000
-
-    target = torch.ones((1000, 1))
-    loss = loss_fn(similarities, target)
+    if train_acc >= 0.99 and val_acc >= 0.9:
+        np.save('dataset/h.npy', h.cpu().detach().numpy())
+        break
 
     optimizer.zero_grad()
-    loss.backward()
+    train_loss.backward()
     optimizer.step()
 
-    if epoch >= 3:
-        dur.append(time.time() - t0)
+    # Logging
+    dur.append(time.time() - t0)
 
-    if epoch % 100 == 0:
-        print("Epoch {:05d} | train_error {:.3f}| val_error {:.3f}| Loss {:.4f} | Time(s) {:.4f}".format(
-            epoch, train_error, val_error, loss.item(), np.mean(dur)))
+    print(
+        f'Epoch {epoch: 5d}',
+        f'Train loss {train_loss:.4f}',
+        f'Val loss {val_loss:.4f}',
+        f'Train acc {train_acc:.3%}',
+        f'Val acc {val_acc:.3%}',
+        f'Time/it {np.mean(dur):.4f}',
+        sep=' | ',
+        end=('\n' if epoch % 100 == 0 else '\r')
+    )
