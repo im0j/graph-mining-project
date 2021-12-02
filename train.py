@@ -1,18 +1,22 @@
 import argparse
-from datetime import datetime
+import os
+import pickle
 import time
 import uuid
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from dgl.data.utils import load_graphs
 from dgl.nn.pytorch.conv import GATConv as GAT
 
+
+os.makedirs('output', exist_ok=True)
+os.makedirs('history', exist_ok=True)
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--thres', type=float, default=0.5)
@@ -38,8 +42,11 @@ if device.type == 'cuda':
 else:
     print('Warning: The process might take a lot of time with cpu.')
     print('Press enter to continue / Ctrl+C to stop.')
-    try: input()
-    except KeyboardInterrupt: print('[Exit]'); exit(0)
+    try:
+        input()
+    except KeyboardInterrupt:
+        print('[Exit]')
+        exit(0)
 
 
 g = load_graphs("dataset/paper_author_relationship.bin")[0][0].to(device)
@@ -82,17 +89,15 @@ optimizer = torch.optim.Adam(net.parameters(), lr=args.lr)
 loss_fn = nn.MSELoss().to(device)
 
 # main loop
-history = {
-    'meta': {
-        'timestamp': datetime.isoformat(datetime.now()),
-        'id': uuid.uuid4(),
-    },
-    'params': {
-        args.lr
-    }
-}
-
 dur = []
+meta = {
+    'id': str(uuid.uuid4()),
+    'timestamp': datetime.isoformat(datetime.now()),
+    'params': vars(args),
+}
+min_val_loss = float('inf')
+doubts = 0
+history = {}
 for epoch in range(args.epochs):
     t0 = time.time()
 
@@ -150,10 +155,6 @@ for epoch in range(args.epochs):
     train_pred = train_out > args.thres
     train_acc = torch.mean((train_pred == train_label).to(torch.float)).detach().float()
 
-    if train_acc >= 0.99 and val_acc >= 0.9:
-        np.save('dataset/h.npy', h.cpu().detach().numpy())
-        break
-
     optimizer.zero_grad()
     train_loss.backward()
     optimizer.step()
@@ -171,3 +172,26 @@ for epoch in range(args.epochs):
         sep=' | ',
         end=('\n' if epoch % 100 == 0 else '\r')
     )
+
+    history[epoch] = {
+        'train_loss': train_loss,
+        'val_loss': val_loss,
+        'train_acc': train_acc,
+        'val_acc': val_acc,
+    }
+
+    # Best model save & Early stopping
+    if val_loss < min_val_loss:
+        min_val_loss = val_loss
+        torch.save(net, f"output/{meta['id']}-{epoch:05d}.bin")
+    else:
+        if epoch > 50:
+            if val_loss > min_val_loss * 1.01:
+                doubts += 1
+            else:
+                doubts = 0
+        if doubts >= 25:
+            break
+
+pickle.dump({'meta': meta, 'history': history}, f"history/{meta['timestamp']}.pkl")
+torch.save(net, f"output/{meta['id']}-{epoch:05d}-final.bin")
