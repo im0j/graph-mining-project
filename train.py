@@ -1,5 +1,7 @@
 import argparse
+from datetime import datetime
 import time
+import uuid
 
 import numpy as np
 import pandas as pd
@@ -14,8 +16,12 @@ from dgl.nn.pytorch.conv import GATConv as GAT
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--thres', type=float, default=0.5)
-parser.add_argument('--epochs', type=int, default=1000)
+parser.add_argument('--epochs', type=int, default=500)
 parser.add_argument('--lr', type=float, default=1e-3)
+parser.add_argument('--feats', type=int, default=32)
+parser.add_argument('--heads', type=int, default=16)
+parser.add_argument('--batch-size', type=int, default=256)
+parser.add_argument('--neg-p', type=float, default=0.875)
 args = parser.parse_args()
 
 
@@ -29,6 +35,11 @@ if device.type == 'cuda':
     print('Memory Usage:')
     print('Allocated:', round(torch.cuda.memory_allocated(0)/1024**3, 1), 'GB')
     print('Cached:   ', round(torch.cuda.memory_reserved(0)/1024**3, 1), 'GB')
+else:
+    print('Warning: The process might take a lot of time with cpu.')
+    print('Press enter to continue / Ctrl+C to stop.')
+    try: input()
+    except KeyboardInterrupt: print('[Exit]'); exit(0)
 
 
 g = load_graphs("dataset/paper_author_relationship.bin")[0][0].to(device)
@@ -53,17 +64,17 @@ val = pd.read_csv(
 )
 
 # create graph node embeddings
-node_features = 32  # TODO: hyperparameter
+node_features = args.feats
 num_nodes = g.num_nodes()
 g.ndata['x'] = nn.Parameter(torch.Tensor(
     num_nodes, node_features)).to(device)
-nn.init.uniform_(g.ndata['x'], -1, 1)
+nn.init.normal_(g.ndata['x'])
 
 # create the model, 2 heads, each head has hidden size 8
 net = GAT(
     in_feats=node_features,
     out_feats=node_features,
-    num_heads=16  # TODO: hyperparameter
+    num_heads=args.heads
 ).to(device)
 
 # create optimizer
@@ -71,6 +82,16 @@ optimizer = torch.optim.Adam(net.parameters(), lr=args.lr)
 loss_fn = nn.MSELoss().to(device)
 
 # main loop
+history = {
+    'meta': {
+        'timestamp': datetime.isoformat(datetime.now()),
+        'id': uuid.uuid4(),
+    },
+    'params': {
+        args.lr
+    }
+}
+
 dur = []
 for epoch in range(args.epochs):
     t0 = time.time()
@@ -98,7 +119,9 @@ for epoch in range(args.epochs):
     # Training
     net.train(True)
 
-    pos_count = 64  # TODO: hyperparameter
+    neg_count = int(round(args.batch_size * args.neg_p))
+    pos_count = args.batch_size - neg_count
+
     pos_out = torch.empty((pos_count, 1), requires_grad=False)
     pos_label = torch.ones((pos_count, 1))
     random_samples = np.random.randint(0, 1000-1, pos_count)
@@ -110,7 +133,6 @@ for epoch in range(args.epochs):
         sim = torch.dot(v1, v2) / (torch.norm(v1) * torch.norm(v2))
         pos_out[i] = sim
 
-    neg_count = 192  # TODO: hyperparameter
     neg_out = torch.empty((neg_count, 1), requires_grad=False)
     neg_label = torch.zeros((neg_count, 1))
     random_samples = np.random.randint(0, num_nodes-1, size=(neg_count, 2))
