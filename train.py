@@ -15,7 +15,7 @@ from dgl.nn.pytorch.conv import GATConv as GAT
 parser = argparse.ArgumentParser()
 parser.add_argument('--thres', type=float, default=0.5)
 parser.add_argument('--epochs', type=int, default=1000)
-parser.add_argument('--lr', type=float, default=3e-2)
+parser.add_argument('--lr', type=float, default=1e-3)
 args = parser.parse_args()
 
 
@@ -63,7 +63,7 @@ nn.init.uniform_(g.ndata['x'], -1, 1)
 net = GAT(
     in_feats=node_features,
     out_feats=node_features,
-    num_heads=8
+    num_heads=16  # TODO: hyperparameter
 ).to(device)
 
 # create optimizer
@@ -73,8 +73,7 @@ loss_fn = nn.MSELoss().to(device)
 # main loop
 dur = []
 for epoch in range(args.epochs):
-    if epoch >= 3:
-        t0 = time.time()
+    t0 = time.time()
 
     h = net(g, g.ndata['x'])
     h = torch.flatten(h, start_dim=1)
@@ -93,26 +92,28 @@ for epoch in range(args.epochs):
         val_out[i] = sim
 
     val_loss = loss_fn(val_out, val_label)
-    val_pred = (val_out > args.thres).to(torch.float)
-    val_acc = 1 - torch.mean(torch.abs(val_pred - val_label)).detach().float()
+    val_pred = val_out > args.thres
+    val_acc = torch.mean((val_pred == val_label).to(torch.float)).detach().float()
 
     # Training
     net.train(True)
 
-    pos_out = torch.empty((1000, 1), requires_grad=False)
-    pos_label = torch.ones((1000, 1))
-    for i in range(1000):
-        data1 = author_mapping[train.at[i, 'source']]
-        data2 = author_mapping[train.at[i, 'target']]
+    pos_count = 64  # TODO: hyperparameter
+    pos_out = torch.empty((pos_count, 1), requires_grad=False)
+    pos_label = torch.ones((pos_count, 1))
+    random_samples = np.random.randint(0, 1000-1, pos_count)
+    for i in range(pos_count):
+        data1 = author_mapping[train.at[random_samples[i], 'source']]
+        data2 = author_mapping[train.at[random_samples[i], 'target']]
         v1 = h[data1]
         v2 = h[data2]
         sim = torch.dot(v1, v2) / (torch.norm(v1) * torch.norm(v2))
         pos_out[i] = sim
 
-    neg_count = 2000  # TODO: hyperparameter
+    neg_count = 192  # TODO: hyperparameter
     neg_out = torch.empty((neg_count, 1), requires_grad=False)
-    neg_label = torch.zeros(neg_count, 1)
-    random_samples = np.random.randint(0, num_nodes, size=(neg_count, 2))
+    neg_label = torch.zeros((neg_count, 1))
+    random_samples = np.random.randint(0, num_nodes-1, size=(neg_count, 2))
     for i in range(neg_count):
         data1 = random_samples[i, 0]
         data2 = random_samples[i, 1]
@@ -124,16 +125,15 @@ for epoch in range(args.epochs):
     train_out = torch.cat([pos_out, neg_out])
     train_label = torch.cat([pos_label, neg_label])
     train_loss = loss_fn(train_out, train_label)
-    train_pred = (train_out > args.thres).to(torch.float)
-    train_acc = 1 - torch.mean(torch.abs(train_pred - train_label)).detach().float()
+    train_pred = train_out > args.thres
+    train_acc = torch.mean((train_pred == train_label).to(torch.float)).detach().float()
 
     optimizer.zero_grad()
     train_loss.backward()
     optimizer.step()
 
     # Logging
-    if epoch >= 3:
-        dur.append(time.time() - t0)
+    dur.append(time.time() - t0)
 
     print(
         f'Epoch {epoch: 5d}',
@@ -141,7 +141,7 @@ for epoch in range(args.epochs):
         f'Val loss {val_loss:.4f}',
         f'Train acc {train_acc:.3%}',
         f'Val acc {val_acc:.3%}',
-        f'Time {np.mean(dur):.4f}',
+        f'Time/it {np.mean(dur):.4f}',
         sep=' | ',
         end=('\n' if epoch % 100 == 0 else '\r')
     )
