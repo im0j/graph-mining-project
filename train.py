@@ -183,7 +183,7 @@ for epoch in range(args.epochs):
     # Best model save & Early stopping
     if val_loss < min_val_loss:
         min_val_loss = val_loss
-        torch.save(net, f"output/{meta['id']}-{epoch:05d}.bin")
+        np.save(f"output/{meta['id']}-{epoch:05d}.npy", h.numpy())
     else:
         if epoch > 50:
             if val_loss > min_val_loss * 1.01:
@@ -194,4 +194,4 @@ for epoch in range(args.epochs):
             break
 
 pickle.dump({'meta': meta, 'history': history}, f"history/{meta['timestamp']}.pkl")
-torch.save(net, f"output/{meta['id']}-{epoch:05d}-final.bin")
+np.save(f"output/{meta['id']}-{epoch:05d}-final.npy", h.numpy())
