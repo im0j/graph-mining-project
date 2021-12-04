@@ -27,7 +27,7 @@ parser.add_argument('--heads', type=int, default=16)
 parser.add_argument('--batch-size', type=int, default=256)
 parser.add_argument('--neg-p', type=float, default=0.875)
 args = parser.parse_args()
-
+print(args)
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print('Using device:', device)
@@ -183,7 +183,8 @@ for epoch in range(args.epochs):
     # Best model save & Early stopping
     if val_loss < min_val_loss:
         min_val_loss = val_loss
-        np.save(f"output/{meta['id']}-{epoch:05d}.npy", h.numpy())
+        best_h = h
+#        np.save(f"output/{meta['id']}-{epoch:05d}.npy", h.cpu().detach().numpy())
     else:
         if epoch > 50:
             if val_loss > min_val_loss * 1.01:
@@ -193,5 +194,6 @@ for epoch in range(args.epochs):
         if doubts >= 25:
             break
 
-pickle.dump({'meta': meta, 'history': history}, f"history/{meta['timestamp']}.pkl")
-np.save(f"output/{meta['id']}-{epoch:05d}-final.npy", h.numpy())
+with open(f"history/{meta['timestamp']}.pkl", 'wb') as f:
+    pickle.dump({'meta': meta, 'history': history}, f)
+np.save(f"output/{meta['id']}-{epoch:05d}-best.npy", best_h.cpu().detach().numpy())
